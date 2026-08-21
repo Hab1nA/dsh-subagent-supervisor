@@ -1,100 +1,77 @@
 # dsh-subagent-supervisor
 
-Host-plane subagent supervision tools for the DeepSeek Harness main agent,
-plus a web supervision panel. Fills four gaps in the shipped subagent tooling
-(verified against rc.7):
+面向 DeepSeek Harness 主 Agent 的子代理监督插件（host 平面），附带一个浏览器监督面板。
+补齐了官方子代理工具缺失的四个能力（基于 rc.7 验证）：
 
-| Gap | Tool | Mechanism |
+| 缺口 | 工具 | 机制 |
 | --- | --- | --- |
-| 1. Per-call model / reasoning settings for children | `subagent_run`, `subagent_config` | per-call `AgentOptions` through `ctx.subagents.startContinuable()` + a per-child `agent/request` waterfall installed by `registerContinuableSetup` (applies `reasoningEffort` / `temperature` / `maxTokens` / `provider` / `model` from the child's first request onward, on fresh creation AND cold resume) |
-| 2. Mid-turn "插话" delivery | `subagent_send` (modes `followup` / `inject` / `steer`, optional `cancel_first`) | `followup` = FIFO next turn (cold-resume capable, service-authorized); `steer` / `inject` = the Agent API's `next-step` inbox boundary (running child consumes at its next step boundary inside the current turn); `cancel_first` = `subagents.interrupt()` (keepInbox) first |
-| 3. Message queue management | `subagent_queue` (list / remove / clear) | live `Agent.inbox` for resident children (durable via `agent/inbox/spliced`), log-folded reconstruction for cold children |
-| 4. Step-by-step inspection | `subagent_probe` | status + effective model config (`request/header`) + transcript window (turns/steps, user messages, assistant text & reasoning, tool calls/results, errors) + pending queue summary, from the live session or the persisted log |
+| 1. 按次指定子代理的模型 / 推理设置 | `subagent_run`、`subagent_config` | 通过 `ctx.subagents.startContinuable()` 传按次 `AgentOptions` + `registerContinuableSetup` 安装的按子代理 `agent/request` waterfall（从子代理首个请求起应用 `reasoningEffort` / `temperature` / `maxTokens` / `provider` / `model`，新建与冷恢复都生效） |
+| 2. 回合中"插话"投递 | `subagent_send`（模式 `followup` / `inject` / `steer`，可选 `cancel_first`） | `followup` = FIFO 下一回合（支持冷恢复，服务层授权）；`steer` / `inject` = Agent API 的 next-step 队列边界（运行中的子代理在当前回合内的下个 step 边界消费）；`cancel_first` = 先 `subagents.interrupt()`（保留队列） |
+| 3. 消息队列管理 | `subagent_queue`（list / remove / clear） | 存活子代理读实时 `Agent.inbox`（经 `agent/inbox/spliced` 持久化）；冷子代理从日志折叠重建 |
+| 4. 逐步检查 | `subagent_probe` | 状态 + 生效模型配置（`request/header`）+ 转写窗口（回合/步骤、用户消息、assistant 文本与推理、工具调用与结果、错误）+ pending 队列摘要，读实时会话或持久化日志 |
 
-## Enhancements (v0.2)
+## 增强能力（v0.2+）
 
-- **① reasoningEffort adapter pre-validation** — `subagent_run` / `subagent_config`
-  resolve the effective route (args > overrides > parent) and check the
-  requested effort against `llm.resolveModelInfo(...).reasoning.efforts`
-  BEFORE delegating: an unsupported effort fails fast with the supported list
-  instead of starting a doomed child. When the adapter exposes no effort
-  metadata the check passes through (the child failure would still surface via
-  probe). E.g. modlens-opencode-go exposes `[off, high, max]`.
-- **② override registry persistence** — the registry is stored at
-  `$DSH_HOME/subagent-supervisor/overrides.json` (atomic tmp+rename, serialized
-  writes, best-effort). Loaded at plugin start, so a cold-resumed child after a
-  process restart automatically inherits its configuration — no need to re-run
-  `subagent_config`.
-- **③ web supervision panel** — a "子代理" tab in the conversation view
-  (`conversation.view`, order 20) lists the current session's direct subagents
-  and shows the selected child's transcript with older-page loading; you can
-  queue a message (FIFO followup via `api.subagents.prompt`) and interrupt
-  (`api.subagents.interrupt`) for continuable children. Powered by the
-  official `api.subagents.*` Remote API plus one plugin endpoint
-  (`/plugins/dsh-subagent-supervisor/children-config`) that supplies each
-  child's SET model / reasoning effort / Agent preset as three tags on every
-  list row (and in the detail header) — live children report the composed
-  preset truth; cold children report the explicit override, else the parent's
-  current preset (exactly what a cold resume would inherit — never a bare
-  "inherited" label). The endpoint caches its durable catalog scan for 60s
-  (first call ~1s, cached calls ~1ms; the manual 刷新 button bypasses via
-  `fresh=1`). one-shot children are read-only; the panel is session-scoped and
-  renders nothing without a session. steer/inject remain exclusive to the
-  model-side tools (the browser channel is the human channel by design).
-  Performance: memoized list rows, in-flight guard, per-child history cache
-  with instant re-select, 400-row
-  transcript cap, and history polling only for the selected running child.
-- **④ per-child Agent preset** — `subagent_run {agent_preset: '<id>'}` composes
-  the child from a chosen preset (shipped `standard`/`code`/`minimal`/`cordis`,
-  or locally authored ids under `~/.dsh/.agent-presets`, e.g. the bohrium-*
-  roles). Unknown or unusable presets fail the call before the child starts.
-  The preset choice rides the persisted override registry, so a cold-resumed
-  child after a restart automatically restores its preset. Mechanism: the child
-  initially inherits the parent's composition, then a per-child
-  `agent/pre-step` listener re-links it to the target preset's standing
-  composition BEFORE its first request assembles system/tools
-  (`agentPresets.recompose`). Grandchildren inherit the child's (re-linked)
-  composition. `subagent_config` rejects preset changes mid-run (a mid
-  conversation tool swap would leave logged tool calls the new composition
-  cannot make). Known limitation: the session header still records the parent's
-  preset id — runtime composition is correct and probe reports the truth via
-  `agent_preset` (live children only); only third-party reads that trust the
-  header could show a stale preset.
-- **⑤ settlement closure** — three layers so a finished child never leaves the
-  parent waiting unaware:
-  - `subagent_wait {subagent_ids, timeout_seconds?, require?}` waits inside the
-    CURRENT turn for children to settle and returns each one's terminal state
-    (`stopReason` extracted from the log for cold children, e.g. `interrupted`
-    after a crash) plus its closing output. Already-settled children resolve
-    immediately from the in-process registry; cold children are classified from
-    their durable log (children with queued work or an open turn fail with
-    guidance to wake them first); on timeout the settled subset returns with
-    `timed_out: true`.
-  - `subagent_probe` gained a `settlement` field (`stopReason`/`at`/`summary`/
-    `closingText`) backed by an in-process registry fed by `subagent/end` — the
-    parent can always *query* "is it done and what did it say", even when the
-    settlement notice itself was lost (parent not live, parent turn aborted
-    with pending steering cleared, or a delivery exception).
-  - stall detector (Config: `stallMinutes` default 15, `stallReminder` default
-    true): a running child with no new session event past the threshold gets
-    one throttled inject reminder to its live parent.
-  - Environment caveat observed in this deployment: long tool executions
-    (including `subagent_wait`'s live wait) can be interrupted by an
-    environment-level automatic harness restart. Prefer short wait timeouts
-    with re-query, or rely on the settlement notice when idle (idle parents
-    are woken reliably via followup) plus probe for verification.
+- **① reasoningEffort 适配器预校验** —— `subagent_run` / `subagent_config`
+  先解析最终生效路由（参数 > 覆盖 > 父代），在委托前用
+  `llm.resolveModelInfo(...).reasoning.efforts` 校验请求的推理档：
+  不支持的档位立即报错并列出支持列表，而不是启动一个必然失败的子代理。
+  适配器未暴露 efforts 时校验放行（子代理失败仍会经 probe 回显）。
+  例如 modlens-opencode-go 暴露 `[off, high, max]`。
+- **② 覆盖注册表持久化** —— 注册表存储在
+  `$DSH_HOME/subagent-supervisor/overrides.json`（原子 tmp+rename、串行写、尽力而为）。
+  插件启动时加载，因此进程重启后冷恢复的子代理自动继承其配置——无需重跑
+  `subagent_config`。
+- **③ Web 监督面板** —— 会话视图新增"子代理"tab
+  （`conversation.view`，order 20）：列出当前会话的直接子代理，选中后可查看
+  逐步转写（支持向更早分页）；可发送消息（FIFO followup，走 `api.subagents.prompt`）
+  和中断（`api.subagents.interrupt`）。数据源为官方 `api.subagents.*` Remote API
+  外加一个插件端点（`/plugins/dsh-subagent-supervisor/children-config`），
+  一次请求返回每个子代理**设定的**模型 / 推理强度 / Agent 预设，以三个标签展示在
+  每个列表行（与详情头部）——存活子代理报告组合预设真相；冷子代理报告显式覆盖，
+  否则报告父代当前预设（即冷恢复实际会继承的预设——绝不再显示裸"继承"标签）。
+  端点对持久化目录扫描做了 60 秒缓存（首次约 1s，缓存命中约 1ms；手动"刷新"按钮
+  经 `fresh=1` 绕过缓存）。one-shot 子代理只读；面板为会话级（无会话不渲染）。
+  steer/inject 保留给模型侧工具（浏览器通道按设计是 human 通道）。
+  性能：列表行 memo 化、in-flight 防竞态、按子代理的转写缓存（切换选中即时显示）、
+  转写渲染上限 400 行、仅对选中的运行中子代理轮询转写。
+- **④ 按子代理指定 Agent 预设** —— `subagent_run {agent_preset: '<id>'}` 用指定
+  预设组合子代理（内置 `standard`/`code`/`minimal`/`cordis`，或 `~/.dsh/.agent-presets`
+  下的本地预设，如 bohrium-* 角色）。未知或不可用的预设会在子代理启动前失败。
+  预设选择随覆盖注册表持久化，重启后冷恢复的子代理自动恢复其预设。机制：子代理
+  先继承父代组合，随后按子代理的 `agent/pre-step` 监听器在**首个请求组装
+  system/tools 之前**把它 re-link 到目标预设的 standing 组合
+  （`agentPresets.recompose`）。孙代继承子代理（re-link 后）的组合。
+  `subagent_config` 拒绝运行中改预设（中途换组合会留下新组合无法复现的工具调用日志）。
+  已知限制：会话 header 仍记录父代预设 id——运行期组合正确，probe 经 `agent_preset`
+  报告真相（仅存活子代理）；只有信任 header 的第三方读取可能显示旧预设。
+- **⑤ 结算闭环** —— 三层保障，让已完成的子代理绝不会让父代理茫然等待：
+  - `subagent_wait {subagent_ids, timeout_seconds?, require?}` 在当前回合内等待
+    子代理结算，返回每个子代理的终态（冷子代理从日志提取 `stopReason`，如崩溃后的
+    `interrupted`）与最终输出。本进程已结算的子代理立即返回；冷子代理从持久化日志
+    判定终态（有排队工作或回合未结束的子代理会报错并提示先唤醒）；超时返回已结算
+    子集并带 `timed_out: true`。
+  - `subagent_probe` 新增 `settlement` 字段（`stopReason`/`at`/`summary`/
+    `closingText`），由 `subagent/end` 喂养的进程内注册表支撑——即使结算通知本身
+    丢失（父代未加载、父代回合被中断清掉 pending steering、投递异常），父代理也能
+    随时**查询**"它完成了吗、说了什么"。
+  - 卡住检测（Config：`stallMinutes` 默认 15，`stallReminder` 默认 true）：
+    超过阈值无新会话事件的运行中子代理，会向其存活父代理注入一条节流提醒。
+  - 本部署观察到的环境注意：长时间工具执行（包括 `subagent_wait` 的实时等待）
+    可能被环境级自动重启打断。建议使用短超时 + 重查，或依赖 idle 时的结算通知
+    （idle 父代经 followup 可靠唤醒）+ probe 验证。
 
-## Install
+## 安装
 
-Point pnpm at the checked-out source (adjust the path to your clone):
+将 pnpm 指向克隆下来的源码（按你的克隆路径调整）：
 
 ```powershell
-pnpm --dir $env:DSH_HOME\profiles\web add file:<path-to-this-repo>
+pnpm --dir $env:DSH_HOME\profiles\web add file:<本仓库路径>
 ```
 
-Mount on the **host plane** in `$env:DSH_HOME\profiles\web\cordis.patch.yml`
-(the row must NOT live inside a preset: `registerContinuableSetup` is a process
-singleton and one copy per preset would install every child twice):
+挂载到 **host 平面**：`$env:DSH_HOME\profiles\web\cordis.patch.yml`
+（该行绝不能放在 preset 内：`registerContinuableSetup` 是进程单例，
+每个 preset 一份会让每个子代理被安装两次）：
 
 ```yaml
 - insert:
@@ -102,84 +79,73 @@ singleton and one copy per preset would install every child twice):
       name: dsh-subagent-supervisor
 ```
 
-The client half is auto-discovered via the package's `dsh.client` declaration
-and served at `/plugins/dsh-subagent-supervisor/client.js`; the browser picks
-it up after a page refresh.
+客户端部分经包内的 `dsh.client` 声明自动发现，服务端
+`/plugins/dsh-subagent-supervisor/client.js`；浏览器刷新页面后生效。
 
-> **Note**: `pnpm add file:` COPIES the package (hoisted linker). After editing
-> the source, re-run the `pnpm add` command to re-sync the copy, then restart
-> the harness.
+> **注意**：`pnpm add file:` 会**拷贝**包（hoisted linker）。修改源码后需重跑
+> `pnpm add` 重新同步副本，然后重启 harness。
 
-> **Fixed (v0.2.1)**: `subagent_wait` previously called `ctx.off(...)` inside its
-> timeout/listener cleanup — cordis exposes `ctx.on` with a disposer and has NO
-> `ctx.off`, so the timeout callback threw a TypeError that became an
-> `uncaughtException` and **killed the whole DSH process** (the "服务挂掉"
-> symptom). The live wait now uses a global waiter table fed by the plugin's
-> single `subagent/end` listener (no dynamic listener registration), and all
-> cleanup callbacks are exception-contained. The continuable-child setup
-> disposers were fixed the same way.
+> **已修复（v0.2.1）**：`subagent_wait` 曾在超时/监听器清理中调用 `ctx.off(...)` ——
+> cordis 只暴露带 disposer 的 `ctx.on`、没有 `ctx.off`，超时回调抛出的 TypeError
+> 成为 `uncaughtException`，**杀死了整个 DSH 进程**（即"服务挂掉"现象）。
+> 实时等待现改用全局 waiter 表（由插件唯一的 `subagent/end` 监听器统一喂给），
+> 不再动态注册监听器；所有清理回调均已异常包裹。
+> continuable 子代理的 setup disposer 也做了同样的修复。
 
-Restart the harness. Verify: `dsh --profile web --dump-config` shows the row,
-the five `subagent_*` tools appear in the main agent's catalog, and the
-conversation view shows the 子代理 tab after a page refresh.
+重启 harness。验证：`dsh --profile web --dump-config` 出现该行，
+主 Agent 工具目录出现 6 个 `subagent_*` 工具，刷新页面后会话视图出现"子代理"tab。
 
-## Tools
+## 工具
 
 - **subagent_run** `{description, prompt, provider?, model?, maxTokens?, reasoningEffort?, temperature?, agent_preset?}`
-  → starts a continuable child with the given route and (optionally) Agent
-  preset; returns `{subagentId, messageId, applied}`.
-  Omitted fields inherit the parent's route/preset.
+  → 以给定路由和（可选）Agent 预设启动 continuable 子代理；
+  返回 `{subagentId, messageId, applied}`。未提供的字段继承父代路由/预设。
 - **subagent_send** `{subagent_id, message, mode?: followup|inject|steer, cancel_first?: boolean}`
-  → delivery confirmation only (never the child's answer). **Default mode is
-  `steer`** (interrupt-style, consumed inside the running child's current
-  turn); when no mode is given and the child is not resident, the delivery
-  automatically falls back to `followup` so cold resume keeps working (the
-  returned `mode` reports what was actually used). `steer` cannot interrupt an
-  in-flight model request or tool execution (architecture limit);
-  combine with `cancel_first: true` for the "long single step" case.
+  → 仅返回投递确认（绝不是子代理的回答）。**默认模式为 `steer`**
+  （插话式：运行中的子代理在当前回合内消费）；未指定模式且子代理不在内存时，
+  投递自动降级为 `followup`（冷恢复保持可用；返回的 `mode` 报告实际采用的模式）。
+  `steer` 无法打断正在执行的模型请求或工具调用（架构限制）；
+  "长单步"场景请组合 `cancel_first: true`。
 - **subagent_queue** `{subagent_id, action: list|remove|clear, message_id?}`
-  → `remove`/`clear` require a resident child; `list` also works for cold children.
+  → `remove`/`clear` 需要存活子代理；`list` 对冷子代理同样可用。
 - **subagent_probe** `{subagent_id, limit?, since_turn?, include_reasoning?, max_chars?}`
-  → status, effective config, actual preset, settlement record, transcript window,
-  pending queue summary. Works for cold children.
+  → 状态、生效配置、实际预设、结算记录、转写窗口、pending 队列摘要。冷子代理可用。
 - **subagent_config** `{subagent_id, provider?, model?, maxTokens?, reasoningEffort?, temperature?}`
-  → mid-run override update; applies at the child's next model request.
+  → 运行中覆盖更新；从子代理的下一个模型请求起生效。
 - **subagent_wait** `{subagent_ids, timeout_seconds?, require?: all|any, max_chars?}`
-  → waits inside the current turn for children to settle; returns per-child
-  `{stopReason, summary, closingText?}` plus `timed_out`. See ⑤ above for the
-  three classification paths and the environment caveat.
+  → 在当前回合内等待子代理结算；返回每个子代理的
+  `{stopReason, summary, closingText?}` 以及 `timed_out`。三分支语义与环境注意见 ⑤。
 
-## Semantics and limits
+## 语义与限制
 
-- **Authorization**: every supervision tool verifies the caller is in the
-  target's durable ancestry (`sessionQuery.traceSession`), mirroring the
-  continuation manager's `interrupt` rule. Followup delegates to the
-  service's own authorized path.
-- **Override lifetime**: the registry is persisted to
-  `$DSH_HOME/subagent-supervisor/overrides.json` and replayed at startup, so
-  follow-up turns AND cold-resumed children after a restart keep their
-  configuration (model route, reasoning, preset). Adapter normalization may
-  win (e.g. a provider may resolve its own `maxTokens` default) — the probe's
-  `effective_config` shows what the log actually recorded.
-- **steer timing**: consumed at the child's next step boundary inside the current
-  turn. A rejected step parks steering until the next wake; cancellation or
-  disposal may discard pending steering (core `Agent.steer` semantics).
-- **Cold children**: `followup` and `probe`/`list`/`wait` work; `inject`/`steer`/
-  queue mutations require a resident child.
-- **Settlement registry**: in-process only (`subagent/end` feed, FIFO 200);
-  after a process restart the probe `settlement` field is empty until a new
-  settlement happens — the transcript tail (`turn N end: <reason>`) remains the
-  durable fallback, and `subagent_wait` reclassifies cold children from the log.
-- **stall detector**: default `stallMinutes: 15`, `stallReminder: true`;
-  override via the plugin row config in `cordis.patch.yml`.
+- **授权**：每个监督工具都校验调用者在目标的持久祖先链内
+  （`sessionQuery.traceSession`），与 continuation manager 的 `interrupt` 规则一致。
+  followup 委托服务层自身的授权路径。
+- **覆盖生命周期**：注册表持久化到
+  `$DSH_HOME/subagent-supervisor/overrides.json` 并在启动时重放，因此后续回合
+  与重启后冷恢复的子代理都保留其配置（模型路由、推理、预设）。适配器归一化
+  可能胜出（如 provider 可能解析自己的 `maxTokens` 默认）——probe 的
+  `effective_config` 显示日志实际记录的配置。
+- **steer 时序**：在当前回合内子代理的下一个 step 边界消费。被拒绝的 step
+  会把 steering 留在队列直到下次唤醒；取消或销毁可能丢弃 pending steering
+  （核心 `Agent.steer` 语义）。
+- **冷子代理**：`followup` 与 `probe`/`list`/`wait` 可用；
+  `inject`/`steer`/队列变更需要存活子代理。
+- **结算注册表**：仅进程内（`subagent/end` 喂养，FIFO 200）；
+  进程重启后 probe 的 `settlement` 字段在下次结算前为空——转写尾部
+  （`turn N end: <reason>`）仍是持久兜底，`subagent_wait` 会从日志重新判定冷子代理。
+- **卡住检测**：默认 `stallMinutes: 15`、`stallReminder: true`；
+  可在 `cordis.patch.yml` 的插件行 config 中覆盖。
 
-## Development
+## 开发
 
-- Pure helpers (`clip`, `textOfBlocks`, `textLengthOf`, `mergeOverrides`,
-  `foldPendingInbox`, `queueRowOf`, `selectEventWindow`, `definedOnly`,
-  `validateEffortAgainstModelInfo`, `resolveEffectiveRoute`,
-  `parseOverridesFile`, `serializeOverridesFile`, `resolveOverridesFilePath`)
-  are exported for tests:
-  `node --test plugins/dsh-subagent-supervisor/test/` from the harness root.
-- Rolling back: remove the insert row and `pnpm --dir ... remove dsh-subagent-supervisor`,
-  then restart (config snapshots under `~/.dsh/undo` cover `cordis.patch.yml`).
+- 纯函数（`clip`、`textOfBlocks`、`textLengthOf`、`mergeOverrides`、
+  `foldPendingInbox`、`queueRowOf`、`selectEventWindow`、`definedOnly`、
+  `validateEffortAgainstModelInfo`、`resolveEffectiveRoute`、
+  `parseOverridesFile`、`serializeOverridesFile`、`resolveOverridesFilePath`、
+  `classifySettlement`、`terminalReasonOf`、`finalOutputOf`、`settlementSummaryOf`、
+  `trimSettled`、`registerWaiter`、`resolveWaiters`、`buildChildrenConfig`、
+  `mergeColdChildren`、`resolveSendMode`、`resolveColdPreset`）已导出供测试：
+  harness 根目录运行 `node --test plugins/dsh-subagent-supervisor/test/`。
+- 回滚：移除 insert 行并 `pnpm --dir ... remove dsh-subagent-supervisor`，
+  然后重启（`~/.dsh/undo` 下的配置快照覆盖 `cordis.patch.yml`）。
