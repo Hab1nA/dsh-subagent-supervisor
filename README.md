@@ -61,6 +61,38 @@
     可能被环境级自动重启打断。建议使用短超时 + 重查，或依赖 idle 时的结算通知
     （idle 父代经 followup 可靠唤醒）+ probe 验证。
 
+## 与市场同类插件的对比
+
+基于 dsh 插件市场 curated 目录（awesome-dsh-plugin.com，2026-08-21 快照，共 1837 个插件）
+筛选出的 18 个子代理相关插件，绝大多数只做**委派前的配置**：9 个是纯模型路由类
+（DSH-Subagent-Model-Router、dsh-subagent-default-model、dsh-swarm-router、
+dsh-subagent-model-picker、dsh-plugin-subagent-director、dsh-role-router、
+dsh-delegation-suite、dsh-tier-router 等——给子代理选模型/供应商/推理强度），
+其余为 UI 状态监视（dsh-subagent-monitor）、视觉子代理（dsh-subagent-vision、
+dsh-vision-subagent）、外部 CLI 接入（dsh-subagent-agy）、委派覆盖
+（dsh-subagent-tools，含 model/provider/persona/toolFilter 与 @preset 引用）。
+
+**本插件的定位不同：不只管"子代理用什么模型"，而是覆盖委派后的完整控制闭环。**
+
+| 能力 | 官方工具 | 市场模型路由类 | dsh-subagent-tools | 市场 UI 监视 | **本插件** |
+| --- | --- | --- | --- | --- | --- |
+| 按次模型 / 供应商 | ✓（provider/model/maxTokens） | ✓（路由/枚举别名） | ✓（model/provider/persona/toolFilter） | ✗ | ✓ |
+| 推理强度 + 温度 | ✗ | ✓ 部分（仅推理强度） | ✗ | ✗ | ✓（含适配器预校验） |
+| Agent 预设指定 | ✗ | ✗ | ✓（@preset 引用，机制不同） | ✗ | ✓（agent_preset + 冷恢复自动重放） |
+| 插话投递（steer / inject） | ✗（仅 followup） | ✗ | ✗ | ✗ | ✓（默认 steer，冷子代理自动降级 followup） |
+| 中断组合（cancel_first） | ✓（interrupt_agent 保留队列） | ✗ | ✗ | ✗ | ✓ |
+| 消息队列管理（list/remove/clear） | ✗ | ✗ | ✗ | ✗ | ✓ |
+| 逐步转写 / 配置探测 | ✗ | ✗ | ✗ | ✗ | ✓（probe：转写/配置/预设真相/结算） |
+| 结算等待 | ✗ | ✓（wait-for-subagents 汇合） | ✗ | ✗ | ✓（三分支 + 超时 + any/all） |
+| 结算兜底查询 / 卡住提醒 | ✗ | ✗ | ✗ | ✗ | ✓（settlement 字段 + stall 检测） |
+| 覆盖配置持久化（重启重放） | ✗ | ✗ | ✗ | ✗ | ✓（overrides.json） |
+| Web 面板 | ✗（官方仅 '@' 引用 UI） | ✓ 部分（模型标签） | ✗ | ✓（状态卡片） | ✓（转写 + 三标签 + 发消息/中断） |
+
+**结论**：市场主流插件解决"把任务派给哪个模型"（委派前的一次性配置）；本插件解决
+"派出去之后如何掌控"——插话、队列、逐步检查、结算等待与兜底、配置持久化、
+监督面板，构成从**配置 → 启动 → 插话 → 检查 → 等待 → 结算**的完整闭环，
+且全部在插件层实现（零核心包改动）。
+
 ## 安装
 
 将 pnpm 指向克隆下来的源码（按你的克隆路径调整）：
