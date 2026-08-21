@@ -1,7 +1,7 @@
 {
   "name": "dsh-subagent-supervisor",
-  "version": "0.2.0",
-  "description": "Host-plane subagent supervision tools for the main agent: per-child model/reasoning overrides, steer/inject delivery, queue management, step-level probing, plus a web supervision panel.",
+  "version": "0.3.0",
+  "description": "Host-plane subagent supervision tools for the DeepSeek Harness main agent: per-child model/reasoning/Agent-preset overrides, steer/inject delivery, queue management, step-level probing, settlement wait, plus a web supervision panel.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -24,6 +24,23 @@
   },
   "files": ["lib"],
   "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "subagent",
+    "agent",
+    "orchestration",
+    "supervision"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hab1nA/dsh-subagent-supervisor.git"
+  },
+  "homepage": "https://github.com/Hab1nA/dsh-subagent-supervisor",
+  "bugs": {
+    "url": "https://github.com/Hab1nA/dsh-subagent-supervisor/issues"
+  },
   "peerDependencies": {
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-llm": "^0.1.0-rc.7"
