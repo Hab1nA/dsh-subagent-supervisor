@@ -60,6 +60,15 @@
   - 本部署观察到的环境注意：长时间工具执行（包括 `subagent_wait` 的实时等待）
     可能被环境级自动重启打断。建议使用短超时 + 重查，或依赖 idle 时的结算通知
     （idle 父代经 followup 可靠唤醒）+ probe 验证。
+- **⑥ 会话级继承快照 + 实际值显示（v0.3.1）** —— 三处修正：
+  - `subagent_run` 未指定模型/推理时，子代理继承**当前会话最后一次实际请求的模型**
+    （`request/header` 快照，与 UI 显示一致），而不是进程级全局默认——修复了
+    "在 B 会话选过模型后，回到 A 会话开子代理，子代理却继承了 B 会话模型"的污染问题；
+    快照写入覆盖注册表，冷恢复自动重放。
+  - Web 面板三标签显示**实际值**：未显式设定的模型/推理强度直接显示当前实际值
+    （显式覆盖 > 子代理自身请求头 > 父代会话请求头），不再显示裸"继承"。
+  - `subagent_send` 显式 `steer`/`inject` 发给冷子代理时**自动降级为 followup 发送**
+    （不再报错），返回的 `mode` 报告实际采用的模式。
 
 ## 与市场同类插件的对比
 
@@ -162,7 +171,8 @@ pnpm --dir $env:DSH_HOME\profiles\web add file:<本仓库路径>
   会把 steering 留在队列直到下次唤醒；取消或销毁可能丢弃 pending steering
   （核心 `Agent.steer` 语义）。
 - **冷子代理**：`followup` 与 `probe`/`list`/`wait` 可用；
-  `inject`/`steer`/队列变更需要存活子代理。
+  `inject`/`steer`/队列变更需要存活子代理（`subagent_send` 的 steer/inject 发给
+  冷子代理会自动降级为 followup 发送，不报错）。
 - **结算注册表**：仅进程内（`subagent/end` 喂养，FIFO 200）；
   进程重启后 probe 的 `settlement` 字段在下次结算前为空——转写尾部
   （`turn N end: <reason>`）仍是持久兜底，`subagent_wait` 会从日志重新判定冷子代理。

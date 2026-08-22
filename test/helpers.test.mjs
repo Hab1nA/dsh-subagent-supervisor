@@ -38,6 +38,8 @@ import {
   mergeColdChildren,
   resolveSendMode,
   resolveColdPreset,
+  inheritRouteFromHeader,
+  resolveEffectiveDisplay,
 } from '../lib/index.js'
 
 test('clip truncates long text with head/tail and keeps short text intact', () => {
@@ -529,12 +531,51 @@ test('resolveSendMode defaults to steer but falls back to followup for cold chil
   // explicit followup always stays followup (cold or resident)
   assert.deepEqual(resolveSendMode('followup', false), { mode: 'followup', fallback: false })
   assert.deepEqual(resolveSendMode('followup', true), { mode: 'followup', fallback: false })
-  // explicit steer/inject to a cold child is NOT downgraded (the caller asked for it)
-  assert.deepEqual(resolveSendMode('steer', false), { mode: 'steer', fallback: false })
-  assert.deepEqual(resolveSendMode('inject', false), { mode: 'inject', fallback: false })
+  // EXPLICIT steer/inject to a cold child now also falls back to followup
+  // (a cold child cannot steer; deliver as followup instead of erroring).
+  const coldSteer = resolveSendMode('steer', false)
+  assert.equal(coldSteer.mode, 'followup')
+  assert.equal(coldSteer.fallback, true)
+  const coldInject = resolveSendMode('inject', false)
+  assert.equal(coldInject.mode, 'followup')
+  assert.equal(coldInject.fallback, true)
   // explicit steer/inject to a resident child stays as requested
   assert.deepEqual(resolveSendMode('steer', true), { mode: 'steer', fallback: false })
   assert.deepEqual(resolveSendMode('inject', true), { mode: 'inject', fallback: false })
+})
+
+test('inheritRouteFromHeader snapshots the parent session actual model for children', () => {
+  const header = { provider: 'modlens-opencode-go', model: 'deepseek-v4-flash', reasoningEffort: 'high', maxTokens: 384000 }
+  // no explicit args -> full snapshot
+  assert.deepEqual(inheritRouteFromHeader(header, {}), { provider: 'modlens-opencode-go', model: 'deepseek-v4-flash', reasoningEffort: 'high' })
+  // explicit args win over the snapshot
+  assert.deepEqual(inheritRouteFromHeader(header, { model: 'm2' }), { provider: 'modlens-opencode-go', model: 'm2', reasoningEffort: 'high' })
+  assert.deepEqual(inheritRouteFromHeader(header, { provider: 'p2', reasoningEffort: 'max' }), { provider: 'p2', model: 'deepseek-v4-flash', reasoningEffort: 'max' })
+  // no header -> nothing inherited (current behavior)
+  assert.deepEqual(inheritRouteFromHeader(undefined, {}), {})
+  assert.deepEqual(inheritRouteFromHeader(undefined, { model: 'm' }), { model: 'm' })
+  // reasoningEffort only inherited when the header carries it
+  assert.deepEqual(inheritRouteFromHeader({ provider: 'p', model: 'm' }, {}), { provider: 'p', model: 'm' })
+})
+
+test('resolveEffectiveDisplay shows the actual model/reasoning values for the panel', () => {
+  // explicit override wins
+  assert.deepEqual(
+    resolveEffectiveDisplay({ model: 'm1', reasoningEffort: 'high' }, { model: 'm0', reasoningEffort: 'low' }),
+    { model: 'm1', reasoningEffort: 'high' },
+  )
+  // override missing -> effective (child header / parent header) value shown
+  assert.deepEqual(
+    resolveEffectiveDisplay({}, { model: 'm0', reasoningEffort: 'low' }),
+    { model: 'm0', reasoningEffort: 'low' },
+  )
+  // per-field fallback
+  assert.deepEqual(
+    resolveEffectiveDisplay({ model: 'm1' }, { model: 'm0', reasoningEffort: 'low' }),
+    { model: 'm1', reasoningEffort: 'low' },
+  )
+  // nothing known anywhere -> undefined (panel falls back to 继承)
+  assert.deepEqual(resolveEffectiveDisplay({}, {}), { model: undefined, reasoningEffort: undefined })
 })
 
 test('resolveColdPreset prefers override > header snapshot > parent preset', () => {
