@@ -1,6 +1,6 @@
 {
   "name": "dsh-subagent-supervisor",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Host-plane subagent supervision tools for the DeepSeek Harness main agent: per-child model/reasoning/Agent-preset overrides, steer/inject delivery, queue management, step-level probing, settlement wait, plus a web supervision panel.",
   "type": "module",
   "main": "lib/index.js",
