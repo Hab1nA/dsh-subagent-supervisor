@@ -1,4 +1,7 @@
 # Internal delivery documents (not part of the published plugin)
 DOUBLECHECK.md
 DOUBLECHECK-REPORT.md
-`n# npm pack artifacts`n*.tgz
+# npm pack artifacts
+*.tgz
+# dependencies
+node_modules/

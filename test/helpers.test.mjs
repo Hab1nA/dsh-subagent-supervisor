@@ -24,6 +24,8 @@ import {
   definedOnly,
   validateEffortAgainstModelInfo,
   resolveEffectiveRoute,
+  validateModelRoute,
+  compareOverrideToEffective,
   parseOverridesFile,
   serializeOverridesFile,
   resolveOverridesFilePath,
@@ -269,6 +271,26 @@ test('resolveEffectiveRoute resolves per-field with args > overrides > parent', 
   assert.deepEqual(resolveEffectiveRoute({}, parent, {}), { provider: 'parent-prov', model: 'parent-model' })
   // undefined parent fields stay undefined (caller then skips validation)
   assert.deepEqual(resolveEffectiveRoute({}, {}, {}), { provider: undefined, model: undefined })
+})
+
+test('validateModelRoute accepts a registered provider/model route', async () => {
+  const ctx = { get: (name) => name === 'llm' ? { resolveModelInfo: async () => ({ provider: 'p', id: 'm' }) } : undefined }
+  assert.deepEqual(await validateModelRoute(ctx, { provider: 'p', model: 'm' }), { ok: true })
+})
+
+test('validateModelRoute rejects an unresolvable provider/model route', async () => {
+  const ctx = { get: () => ({ resolveModelInfo: async () => { throw new Error('unknown model') } }) }
+  const result = await validateModelRoute(ctx, { provider: 'bad-provider', model: 'bad-model' })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /bad-provider.*bad-model|unknown model/)
+})
+
+test('compareOverrideToEffective reports pending, matched, and unapplied states', () => {
+  assert.deepEqual(compareOverrideToEffective({ provider: 'p', model: 'm' }, undefined), { status: 'pending', mismatches: [] })
+  assert.deepEqual(compareOverrideToEffective({ provider: 'p', model: 'm' }, { provider: 'p', model: 'm' }), { status: 'matched', mismatches: [] })
+  const mismatch = compareOverrideToEffective({ provider: 'p', model: 'm' }, { provider: 'p2', model: 'm2' })
+  assert.equal(mismatch.status, 'not_applied')
+  assert.deepEqual(mismatch.mismatches, ['provider', 'model'])
 })
 
 /* ------------------------------------------------------------------ *

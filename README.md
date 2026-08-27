@@ -69,6 +69,16 @@
     （显式覆盖 > 子代理自身请求头 > 父代会话请求头），不再显示裸"继承"。
   - `subagent_send` 显式 `steer`/`inject` 发给冷子代理时**自动降级为 followup 发送**
     （不再报错），返回的 `mode` 报告实际采用的模式。
+- **⑦ 路由预校验 + override 生效状态（v0.4.0）** —— 两处修正：
+  - `subagent_run` / `subagent_config` 在委托前新增**路由预校验**：用
+    `llm.resolveModelInfo(provider, model)` 确认合并后的路由（参数 > 覆盖 > 父代）
+    可路由，路由不存在时立即报错并说明原因，不再把委托花在一个必然失败的子代理上；
+    适配器未暴露 resolver 或路由不完整时跳过校验（返回 `route_validation: "skipped"`），
+    由 probe 回显。
+  - `subagent_probe` 新增 `override_status` / `override_mismatches`：把所设 override
+    与子代理最近一次实际请求/header 快照比对——`pending`（子代理尚未发出请求）/
+    `matched`（已生效）/ `not_applied`（存在未生效字段，输出列出差异字段名），
+    渲染时带 ⚠ / ⏳ 提示。
 
 ## 与市场同类插件的对比
 
