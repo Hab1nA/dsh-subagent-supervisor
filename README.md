@@ -1,7 +1,7 @@
 # dsh-subagent-supervisor
 
 面向 DeepSeek Harness 主 Agent 的子代理监督插件（host 平面），附带一个浏览器监督面板。
-补齐了官方子代理工具缺失的四个能力（基于 rc.7 验证）：
+补齐了官方子代理工具缺失的四个能力（v0.5.0 起在 DSH `0.1.1-rc.2` / `0.1.2-alpha.1` / `0.1.2-alpha.2` 三条核心版本线上自动兼容）：
 
 | 缺口 | 工具 | 机制 |
 | --- | --- | --- |
@@ -189,6 +189,22 @@ pnpm --dir $env:DSH_HOME\profiles\web add file:<本仓库路径>
 - **卡住检测**：默认 `stallMinutes: 15`、`stallReminder: true`；
   可在 `cordis.patch.yml` 的插件行 config 中覆盖。
 
+## 兼容性（v0.5.0+）
+
+- **支持的 DSH 核心版本线**：`0.1.1-rc.2`、`0.1.2-alpha.1`、`0.1.2-alpha.2`。
+  peer 依赖统一声明为
+  `>=0.1.1-rc.2 <0.2.0 || >=0.1.2-alpha.1 <0.2.0`（npm semver 实测通过）。
+- **host 平面**：插件导入的 `@deepseek-ai/dsh-tools`（`defineTool`）与
+  `@deepseek-ai/dsh-llm/message`（`createUserMessage`/`freezeMessage`）在三条线上
+  均存在，6 个 `subagent_*` 工具无差异运行；启动时打印探测到的核心版本与代际
+  （`dsh-subagent-supervisor: core <版本> (generation rc2|alpha)`）。
+- **web 面板**：rc.2 线完整可用；alpha 线因客户端运行时改名
+  （`dsh-client-runtime` → `dsh-client-modules`）与 ApiProxy 网关移除，
+  面板自动跳过并打印一条告警（`web panel skipped ...`），
+  不影响 host 平面任何工具，也不会导致页面崩溃。
+- 版本检测与能力表集中在 `lib/compat.js`（纯函数），行为由
+  `test/compat.test.mjs` 锁定（peer 范围 / 代际分类 / 客户端引导守卫）。
+
 ## 开发
 
 - 纯函数（`clip`、`textOfBlocks`、`textLengthOf`、`mergeOverrides`、
@@ -198,6 +214,6 @@ pnpm --dir $env:DSH_HOME\profiles\web add file:<本仓库路径>
   `classifySettlement`、`terminalReasonOf`、`finalOutputOf`、`settlementSummaryOf`、
   `trimSettled`、`registerWaiter`、`resolveWaiters`、`buildChildrenConfig`、
   `mergeColdChildren`、`resolveSendMode`、`resolveColdPreset`）已导出供测试：
-  harness 根目录运行 `node --test plugins/dsh-subagent-supervisor/test/`。
+  仓库内直接 `npm test`（node --test test/*.test.mjs）：
 - 回滚：移除 insert 行并 `pnpm --dir ... remove dsh-subagent-supervisor`，
   然后重启（`~/.dsh/undo` 下的配置快照覆盖 `cordis.patch.yml`）。
